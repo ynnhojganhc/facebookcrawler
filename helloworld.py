@@ -68,6 +68,7 @@ class FacebookCrawler:
 
         self.friend_xpath = '//*[@id="root"]//table[@role="presentation"]//a[@class="cc"]'
         self.profilename_xpath = '//*[@id="root"]//strong'
+        self.feeds_xpath = '//div[@id="recent"]/div/div/div'
         if not isinstance(parser, IParser): raise Exception('Bad interface')
         if not IParser.version() == '1.0': raise Exception('Bad revision')
         self.parser = parser
@@ -159,6 +160,9 @@ class FacebookCrawler:
 
     def feeds(self, uid):
         self.getpage(self.timeline.format(uid))
+        for feed in self.elements(self.friend_xpath):
+            text = e.get_attribute('innerText')
+            print text
 
 class IParser:
     __metaclass__ = ABCMeta

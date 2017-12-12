@@ -13,6 +13,12 @@ import urllib
 import re
 import time
 from abc import *
+import codecs
+import locale
+import sys
+
+# Wrap sys.stdout into a StreamWriter to allow writing unicode.
+sys.stdout = codecs.getwriter(locale.getpreferredencoding())(sys.stdout)
 
 class Facebook():
     def __init__(self):
@@ -56,7 +62,7 @@ class FacebookUser(object):
         return u'%s%s' % (me, friend)
 
 class FacebookCrawler:
-    def __init__(self, parser, facebook):
+    def __init__(self, facebook):
         self.facebook = facebook
         self.uid = re.compile(r'(?<=id=).\w*(?=&)')
         self.browser = webdriver.Firefox()
@@ -69,11 +75,6 @@ class FacebookCrawler:
         self.friend_xpath = '//*[@id="root"]//table[@role="presentation"]//a[@class="cc"]'
         self.profilename_xpath = '//*[@id="root"]//strong'
         self.feeds_xpath = '//div[@id="recent"]/div/div/div'
-        if not isinstance(parser, IParser): raise Exception('Bad interface')
-        if not IParser.version() == '1.0': raise Exception('Bad revision')
-        self.parser = parser
-
-
         return
 
     def waitfor(self, cond, timeout=3):
@@ -89,8 +90,6 @@ class FacebookCrawler:
         try:
             # fb mobile site login steps
             # locating elements by using xpath
-            print(self.facebookusername)
-            print(self.facebookpassword)
             def input_account():
                 self.browser.find_element_by_xpath('//*[@id="login_form"]//input[@type="text"]').send_keys(self.facebookusername)
                 self.browser.find_element_by_xpath('//*[@id="login_form"]//input[@type="password"]').send_keys(self.facebookpassword)
@@ -106,6 +105,9 @@ class FacebookCrawler:
         except NoSuchElementException as e:
             print(e)
 
+    def back(self):
+        self.browser.back()
+
     def getpage(self, url=None, action=None):
         def complete():
             page_state = self.browser.execute_script(
@@ -116,15 +118,22 @@ class FacebookCrawler:
             if url: self.browser.get(url)
             if action: action()
             self.waitfor(complete, timeout=5)
+            time.sleep(1)
         except Exception as e:
             print e
         return
 
-    def elements(self, xpath):
-        return self.browser.find_elements_by_xpath(xpath)
+    def elements(self, xpath, e=None):
+        if e is not None:
+            return e.find_elements_by_xpath(xpath)
+        else:
+            return self.browser.find_elements_by_xpath(xpath)
 
-    def element(self, xpath):
-        return self.browser.find_element_by_xpath(xpath)
+    def element(self, xpath, e=None):
+        if e is not None:
+            return e.find_element_by_xpath(xpath)
+        else:
+            return self.browser.find_element_by_xpath(xpath)
 
     def friends(self, uid, depth=1):
         if uid in self.facebook.users:
@@ -158,60 +167,74 @@ class FacebookCrawler:
             self.friends(f, depth-1)
         return
 
-    def feeds(self, uid):
-        self.getpage(self.timeline.format(uid))
-        for feed in self.elements(self.friend_xpath):
-            text = e.get_attribute('innerText')
+    def reply(self, link, keyword):
+        self.getpage(link)
+        content = self.element('//div[@id="root"]')
+        text = content.get_attribute('innerText')
+        if keyword.lower() in text.lower():
+            print link
             print text
 
-class IParser:
-    __metaclass__ = ABCMeta
+    def photo(self, link, keyword):
+        self.getpage(link)
+        content = self.element('//div[@id="MPhotoContent"]')
+        text = self.element('./div[1]/div[1]', content).get_attribute('innerText')
+        if keyword.lower() in text.lower():
+            print link
+            print text
+        for m in self.elements('//div[contains(@id, "comment_replies_mor")]'):
+            more = self.element('.//a[contains(@href, "replies")]', m)
+            self.reply(more.get_attribute('href'), keyword)
 
-    @classmethod
-    def version(self): return "1.0"
-    @abstractmethod
-    def parse(self): raise NotImplementedError
+    def feeds(self, uid, keyword):
+        self.getpage(self.timeline.format(uid))
+        while True:
+            # try to get next page
+            next = None
+            try:
+                more = self.element('.//a[contains(@href, "profile.php?sectionLoadingID")]')
+                next = more.get_attribute('href')
+            except:
+                return
 
-# parse html by beautiful soup
-class BSParser(IParser):
-    def __init__(self):
-        return
-    def parseImage(self, soup):
-        # for p in soup.find_all('img'):
-        #    print p;
-        for p in soup.find_all('div', attrs={'class': 'cp'}):
-            # print p;
-            for pp in p.find_all('img'):
-                print(pp['src'])
-                root, ext = splitext(pp['src'])
-                urllib.urlretrieve(pp['src'], next(
-                    tempfile._get_candidate_names()) + '.jpg')
+            msglinks = set()
+            for feed in self.elements(self.feeds_xpath):
+                text = ''
+                for p in self.elements('.//p',feed):
+                    text += p.get_attribute('innerText')
+                if keyword.lower() in text.lower():
+                    # check messages
+                    link = self.element('.//a[contains(@href, "footer_action_list")]', feed)
+                    msglinks.add((link.get_attribute('href'), text))
+            for p,t in list(msglinks):
+                self.getpage(p)
+                print u'%s' % t
+                ee = self.elements('//div[substring(@id, 0) > 0]')
+                photos = []
+                for e in ee:
+                    try:
+                        print ' user:%s' % self.element('.//h3', e).get_attribute('innerText')
+                        msg = e.get_attribute('innerText')
+                        msg = msg[msg.find('\n')+1:msg.rfind('\n')]
+                        print'  msg:%s' % msg
+                    except:
+                        continue
+                for photo in self.elements('.//a[contains(@href, "photo.php")]'):
+                    photos.append(photo.get_attribute('href'))
+                for photo in photos:
+                    self.photo(photo, keyword)
 
-    def parse(self, content):
-        soup = BeautifulSoup(content, "html.parser")
-        self.parseImage(soup)
-
-# parse html by etree
-class ETParser(IParser):
-    def __init__(self):
-        return
-    def parseImp(self, html):
-        profiles = html.xpath(u"//img[@class='l']")
-        for p in profiles:
-            print(p.attrib['src'])
-
-    def parse(self, content):
-        html = etree.HTML(content)
-        self.parseImp(html)
-
+            if next is None: break
+            self.getpage(next)
 
 def main():
     fb = Facebook()
-    fc = FacebookCrawler(BSParser(), fb)
+    fc = FacebookCrawler(fb)
     fc.login()
     fc.friends(100015200389095, 6)
+    #fc.reply("https://m.facebook.com/comment/replies/?ctoken=115828865861858_117869358991142&count=3&curr&pc=1&ft_ent_identifier=115828865861858&gfid=AQAfyhofKnFWbyC5&refid=13&__tn__=R", 'BOSS')
     for u in fb.users:
-        fc.feeds(u)
+        fc.feeds(u, 'Boss')
     print u'%s' % fb
 
 
